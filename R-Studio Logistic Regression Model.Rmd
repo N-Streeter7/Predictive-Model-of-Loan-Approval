@@ -1,0 +1,149 @@
+---
+title: "Milestone 3 655 Group Project"
+output: html_document
+date: "2024-04-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##1. Loading Packages:
+```{r package_loading}
+library(caret)
+library(dplyr)
+library(pROC)
+```
+
+##2. Setting random seed for reproducible results
+```{r randomseed}
+set.seed(1234)
+```
+
+##3. Importing data: 
+```{r data_import}
+loanapps <- read.csv("C:/Users/nicky/Downloads/655 Group Project Milestone 2 Transfromed Data Final.csv")
+```
+
+##4. Exploring data:
+show that this is a relatively large file (100k rows).
+Each row corresponds to a different loan apllicant. 
+The outcome variable is Loan_Default_Risk: whether a person defaulted on their loan or not (1/0).
+There are many features associated with each loan applicant, as well a unique numerical identifier (Applicant ID).
+```{r data_exploration}
+head(loanapps)
+nrow(loanapps) ##Shows number of rows in data frame
+```
+
+##5. Assess the balance in a categorical outcome variable
+This shows that this data is very unbalanced with regard to the fatality categorical variable (1/0).
+~87k loan applicants have no defualts (0).
+~13k loan applicants have defualts (1).
+This suggests that oversampling is necessary, so that the classification model will have enough loan defaults to learn from. 
+```{r assesing_outcome_split}
+table(loanapps$Loan_Default_Risk)
+```
+
+##6. Extracting held-out test set
+The original data (loanapps was randomly split into a held-out test set (10%) and a remainder set, which will be used to create the oversampling training and validation sets.
+```{r extracting_test_set}
+sample <- sample.int(n = nrow(loanapps), size = nrow(loanapps)*0.10, replace = F)
+
+loanapps_test <- loanapps[sample, ] ##Yields test dataset that is the test percentage % 
+loanapps_rem <- loanapps[-sample, ] ##Remainder of data here
+```
+
+```{r test_extraction_test}
+head(loanapps_test)
+nrow(loanapps_test)
+```
+
+##7. Oversampling data (from remainining data)
+Remainder data split into2 strata: one with all loan application defualts, one with all-non loan application defaults.
+
+Every record in the all defaults stratum will be used in training and validation, as there are not very many of them.
+
+13,000 records will be randomly sampled from the non-default stratum. This is to ensure that the split between default/non-default is close to even on the training and validation data. The number 13,000 was based on the output #5 which showed the number of total loan applicant defaults. 
+```{r oversampling}
+loanapps_rem1 <- loanapps_rem[which(loanapps_rem$Loan_Default_Risk==1), ] ##Extracts all rows of the data frame where the outcome variable = the least common class
+
+loanapps_rem0 <- loanapps_rem[which(loanapps_rem$Loan_Default_Risk==0), ] ##Extracts all rows of the data frame where the outcome variable = the most common class
+
+sample <- sample.int(n = nrow(loanapps_rem0), size = 13000, replace = F) 
+loanapps_rem0_sample <- loanapps_rem0[sample,] ##Extract subsample of NUM_ROWS size from most common class data frame
+
+loanapps_oversampled <- rbind(loanapps_rem1, loanapps_rem0_sample) ##Yields over sampled data, merges together samples most common class with all least common class observations.
+
+head(loanapps_oversampled)
+```
+
+##8. Partitioning oversampled data into training & validation
+```{r training_validation_partition}
+sample <- sample.int(n = nrow(loanapps_oversampled), size = nrow(loanapps_oversampled)*0.75, replace = F)
+
+loanapps_oversampled_train <- loanapps_oversampled[sample, ] ##Yields training dataset that is the training percentage % 
+
+loanapps_oversamples_validation <- loanapps_oversampled[-sample, ] ##Yields held-out validation dataset
+```
+
+##9. Train logistic regression model
+A logistic regression model was trained on the oversampled training data.
+loan default risk (1/0) was predicted using all available predictors/ columns (except for applicant ID, a unique numerical identifier.) 
+```{r training_logistic_regression_model}
+logistic_regression_model <- glm(Loan_Default_Risk ~ . - Applicant_ID, data=loanapps_oversampled_train, family="binomial") ##Or, can use all predictors except one using the ~ . -EXCLUDEDVARIABLE notation
+
+summary(logistic_regression_model) ##Outputs summary of model & coefficients
+```
+
+##10. Produce probability predictions on validation & test data using logistic regression model
+
+The logistic regression model (which was trained on the oversampled training data partition) is used to produce probability predictions (predictions that the loan applicant had defaults) for each loan application/ observation in the oversampled validation set, as well as the held-out test set.
+
+These probability 
+```{r validation_test_predicitons}
+VALIDATION_PREDICTIONS <- predict(logistic_regression_model, newdata=loanapps_oversamples_validation,type="response")
+
+loanapps_oversamples_validation$LOGIT_PRED = VALIDATION_PREDICTIONS
+
+TEST_PREDICTIONS <- predict(logistic_regression_model, newdata=loanapps_test,type="response")
+
+loanapps_test$LOGIT_PRED = TEST_PREDICTIONS
+```
+
+```{r check_test_predictions}
+head(loanapps_test)
+head(loanapps_oversamples_validation)
+```
+
+##11. Assess validation performance using ROC Curve
+```{r}
+myroc <- roc(loanapps_oversamples_validation$Loan_Default_Risk, loanapps_oversamples_validation$LOGIT_PRED)
+auc(myroc) ##Print out AUC
+```
+
+##12. Get validation ROC Curve Data & Select Probability Threshold
+```{r}
+rocdata<-coords(myroc,ret=c("threshold", "sensitivity", "fpr","accuracy")) ##Displays the ROC curve data; sensitity, FPR, and accuracy displayed with each probability threshold
+
+ideal_thresholds <- rocdata[which(rocdata$sensitivity>=0.6 & rocdata$fpr<0.05), ] ##Extracts the ROC curve where the sensitivity meets the minimum; false positive rate less than maximum
+
+ideal_thresholds
+```
+
+##13. Classify validation data records based on probability cutoff; generate confusion matrix & associated metrics
+```{r}
+loanapps_oversamples_validation <- loanapps_oversamples_validation  %>% mutate(LOGIT_CLASSIFICATION = 1*(LOGIT_PRED >= 0.4785288))
+
+validation_performance <- confusionMatrix(data=as.factor(loanapps_oversamples_validation$LOGIT_CLASSIFICATION), reference = as.factor(loanapps_oversamples_validation$Loan_Default_Risk),positive="1") ##Generate confusion matrix (based on probability cutoff)
+
+validation_performance ##Display matrix & metrics
+```
+
+##14. Classify test data records based on probability cutoff; generate confusion matrix & associated metrics
+```{r}
+loanapps_test <- loanapps_test  %>% mutate(LOGIT_CLASSIFICATION = 1*(LOGIT_PRED >= 0.4785288))
+
+test_performance <- confusionMatrix(data=as.factor(loanapps_test$LOGIT_CLASSIFICATION), reference = as.factor(loanapps_test$Loan_Default_Risk),positive="1") ##Generate confusion matrix (based on probability cutoff)
+
+test_performance ##Display matrix & metrics
+```
